@@ -2,6 +2,7 @@ import shutil
 import time
 import tkinter as tk
 from tkinter import filedialog, Menu
+from typing import TypedDict
 from PIL import Image, ImageTk
 import pygame
 import threading
@@ -10,6 +11,8 @@ from pystray import MenuItem
 import sys
 import os
 from easing_functions import CubicEaseIn, SineEaseInOut, QuadEaseOut
+import yaml
+from dataclasses import dataclass
 
 
 def custom_easing_curve(t: float) -> tuple[float, float]:
@@ -63,6 +66,48 @@ def resource_path(relative_path: str) -> str:
     return os.path.join(base_path, relative_path)
 
 
+path_config: str = "config.yml"
+
+class Config(TypedDict):
+    char: str # 自定义角色文件夹
+
+config: Config
+
+
+path_char_config: str = "config.yml"
+
+# 均为相对路径
+class CharConfig(TypedDict):
+    sound: str # 中旋
+    image: str # 晴
+
+char_config: CharConfig
+
+
+def load_config():
+    global config, char_config
+    with open(resource_path(path_config), "r") as f:
+        config = yaml.load(f, Loader=yaml.FullLoader)
+    with open(char_res_path(path_char_config), "r") as fc:
+        char_config = yaml.load(fc, Loader=yaml.FullLoader)
+
+def dump_config():
+    global config, char_config
+    with open(resource_path(path_config), "w") as f:
+        yaml.dump(config, f)
+    with open(char_res_path(path_char_config), "w") as fc:
+        yaml.dump(char_config, fc)
+
+
+# 获取角色素材
+def char_path(relative_path: str, path: str | None = None) -> str:
+    return os.path.join(config["char"] if path is None else path, relative_path)
+
+
+def char_res_path(relative_path: str, path: str | None = None) -> str:
+    return resource_path(char_path(relative_path, path))
+
+
 class FloatingImage:
     def __init__(self, root: tk.Tk, image_path: str | None = None):
         self.animation_start_time: int | None = None
@@ -81,10 +126,10 @@ class FloatingImage:
 
         # 初始化音效
         pygame.mixer.init()
-        self.sound: pygame.mixer.Sound = pygame.mixer.Sound(resource_path("bounce.wav"))  # 替换为你的音效文件
+        self.sound: pygame.mixer.Sound = pygame.mixer.Sound(char_res_path(char_config["sound"]))  # 替换为你的音效文件
 
         # 图片相关
-        self.image_path: str = image_path if image_path else resource_path("default.png")  # 默认图片
+        self.image_path: str = image_path if image_path else char_res_path(char_config["image"])  # 默认图片
         self.load_image()
 
         # 拖动相关
@@ -217,6 +262,8 @@ class FloatingImage:
         self.right_menu = Menu(self.root, tearoff=0)
         self.right_menu.add_command(label="更换中旋", command=self.change_sound)
         self.right_menu.add_command(label="更换晴", command=self.change_image)
+        self.right_menu.add_command(label="导入", command=self.load_char)
+        self.right_menu.add_command(label="导出", command=self.dump_char)
         self.right_menu.add_separator()
         self.right_menu.add_command(label="关闭", command=self.quit_app)
 
@@ -234,7 +281,9 @@ class FloatingImage:
             filetypes=[("图片文件", "*.png *.gif *.jpg *.jpeg *.bmp *.webp")]
         )
         if file_path:
-            shutil.copy(file_path, resource_path("default.png"))
+            shutil.copy(file_path, char_res_path(os.path.basename(file_path)))
+            char_config["image"] = os.path.basename(file_path)
+            dump_config()
             self.restart_app()
 
     def change_sound(self):
@@ -244,8 +293,28 @@ class FloatingImage:
             filetypes=[("音频文件", "*.wav *.mp3 *.ogg *.flac")]
         )
         if file_path:
-            shutil.copy(file_path, resource_path("bounce.wav"))
+            shutil.copy(file_path, char_res_path(os.path.basename(file_path)))
+            char_config["sound"] = os.path.basename(file_path)
+            dump_config()
             self.restart_app()
+
+    def load_char(self):
+        """从文件夹导入当前角色配置"""
+        file_path: str = filedialog.askdirectory(
+            title="从文件夹导入",
+        )
+        if file_path:
+            config["char"] = resource_path(file_path)
+            self.restart_app()
+
+    def dump_char(self):
+        """导出当前角色配置至文件夹"""
+        file_path: str = filedialog.askdirectory(
+            title="导出到文件夹",
+        )
+        if file_path:
+            shutil.copytree(resource_path(config["char"]), resource_path(file_path), dirs_exist_ok=True)
+            # self.restart_app()
 
     def create_tray(self):
         """创建系统托盘"""
@@ -260,6 +329,8 @@ class FloatingImage:
         tray_menu: tuple[MenuItem, ...] = (
             MenuItem('更换中旋', self.change_sound),
             MenuItem('更换晴', self.change_image),
+            MenuItem('导入', self.load_char),
+            MenuItem('导出', self.dump_char),
             MenuItem('退出', self.quit_app)
         )
 
@@ -287,6 +358,9 @@ class FloatingImage:
 
 
 def main():
+    # 加载配置
+    load_config()
+    
     # 创建主窗口
     root: tk.Tk = tk.Tk()
     root.title("中旋晴")
@@ -304,5 +378,4 @@ def main():
 
 
 if __name__ == "__main__":
-    # 安装依赖：pip install pillow pygame pystray
     main()
