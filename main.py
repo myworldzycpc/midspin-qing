@@ -278,10 +278,14 @@ class FloatingImage:
         """更换图片"""
         file_path: str = filedialog.askopenfilename(
             title="选择晴",
+            initialdir=char_res_path(""),
             filetypes=[("图片文件", "*.png *.gif *.jpg *.jpeg *.bmp *.webp")]
         )
         if file_path:
-            shutil.copy(file_path, char_res_path(os.path.basename(file_path)))
+            try:
+                shutil.copy(file_path, char_res_path(os.path.basename(file_path)))
+            except shutil.SameFileError:
+                pass
             char_config["image"] = os.path.basename(file_path)
             dump_config()
             self.restart_app()
@@ -290,10 +294,14 @@ class FloatingImage:
         """更换音效"""
         file_path: str = filedialog.askopenfilename(
             title="选择中旋",
+            initialdir=char_res_path(""),
             filetypes=[("音频文件", "*.wav *.mp3 *.ogg *.flac")]
         )
         if file_path:
-            shutil.copy(file_path, char_res_path(os.path.basename(file_path)))
+            try:
+                shutil.copy(file_path, char_res_path(os.path.basename(file_path)))
+            except shutil.SameFileError:
+                pass
             char_config["sound"] = os.path.basename(file_path)
             dump_config()
             self.restart_app()
@@ -302,6 +310,7 @@ class FloatingImage:
         """从文件夹导入当前角色配置"""
         file_path: str = filedialog.askdirectory(
             title="从文件夹导入",
+            initialdir=resource_path(""),
         )
         if file_path:
             config["char"] = resource_path(file_path)
@@ -311,6 +320,7 @@ class FloatingImage:
         """导出当前角色配置至文件夹"""
         file_path: str = filedialog.askdirectory(
             title="导出到文件夹",
+            initialdir=resource_path(""),
         )
         if file_path:
             shutil.copytree(resource_path(config["char"]), resource_path(file_path), dirs_exist_ok=True)
