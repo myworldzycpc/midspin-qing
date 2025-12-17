@@ -3,7 +3,7 @@ import time
 import tkinter as tk
 from tkinter import filedialog, Menu
 from typing import TypedDict
-from PIL import Image, ImageTk
+from PIL import Image, ImageTk, ImageDraw
 import pygame
 import threading
 import pystray
@@ -38,7 +38,7 @@ def resource_path(relative_path: str) -> str:
     """获取资源的绝对路径（用于pyinstaller打包）"""
     base_path: str
     try:
-        base_path = sys._MEIPASS # ?
+        base_path = sys._MEIPASS # type: ignore
     except AttributeError:
         base_path = os.path.abspath(".")
     return os.path.join(base_path, relative_path)
@@ -46,11 +46,17 @@ def resource_path(relative_path: str) -> str:
 
 path_config: str = "config.yml"
 class Config(TypedDict):
-    char: str # 自定义角色文件夹
+    char: str # 当前所选自定义角色的文件夹
+    fps: int # 帧率
+    topmost: bool # 置顶？
+    echo: bool # 音效可叠加？若是，则高速戳晴时很可能会吞音
 
 config: Config
 default_config: Config = Config({
     "char": "miss_qing",
+    "fps": 60,
+    "topmost": True,
+    "echo": False,
 })
 
 
@@ -112,23 +118,20 @@ def threshold(img: Image.Image, thr: float = 0xFF, /) -> Image.Image:
     img.putalpha(alp) # 覆盖透明度通道
     return img
 
-fps: int = 60
-
 
 class FloatingImage:
     def __init__(self, root: tk.Tk, image_path: str | None = None):
         self.root: tk.Tk = root
         self.root.overrideredirect(True)  # 无边框
-        self.root.attributes('-topmost', True)  # 最上层显示
+        self.root.attributes('-topmost', config["topmost"])  # 最上层显示
         self.root.attributes('-transparentcolor', char_config["miyu_color"])  # 透明色（根据图片调整）
 
         # 初始化音效
         pygame.mixer.init()
-        self.sound: pygame.mixer.Sound = pygame.mixer.Sound(char_res_path(char_config["sound"]))  # 替换为你的音效文件
+        self.sound: pygame.mixer.Sound = pygame.mixer.Sound(char_res_path(char_config["sound"]))
 
-        # 图片相关
-        self.image_path: str = image_path if image_path else char_res_path(char_config["image"])  # 默认图片
-        self.load_image()
+        # 初始化图片
+        self.load_image(image_path if image_path else char_res_path(char_config["image"]))
 
         # 拖动相关
         self.dragging: bool = False
@@ -136,7 +139,6 @@ class FloatingImage:
         self.start_y: int = 0
 
         # 动画相关
-        self.animation: list[Image.Image] = [] # 动画帧列表
         self.animating: bool = False # 动画是否正在播放
         self.current_frame: int = 0 # 动画当前位于第几帧
         self.duration: float = 1.5 # 动画总时长（秒）
@@ -147,78 +149,75 @@ class FloatingImage:
         self.canvas.bind("<B1-Motion>", self.on_drag)
         self.canvas.bind("<ButtonRelease-1>", self.on_release)
         self.canvas.bind("<Button-3>", self.show_right_menu)
-
-        # 创建右键菜单
-        self.create_right_menu()
-
-        # 创建系统托盘
-        self.create_tray()
-
-        # 调整窗口大小和位置
-        self.root.geometry(f"{self.width}x{self.height}+100+100")
-
-    def load_image(self):
-        """加载图片并保持原始像素"""
-        self.tray: pystray.Icon # type: ignore
-        self.canvas: tk.Canvas
-        self.width: int
-        self.height: int
-        self.canvas_image: int # 这个大概是ID一类的吧
-        self.tk_image: ImageTk.PhotoImage
-        self.original_image: Image.Image # 原图
-        try:
-            self.original_image = Image.open(self.image_path).convert("RGBA")
-            
-            # 二值化透明度，去除白边
-            self.original_image = threshold(self.original_image)
-            
-            # 略微扩展画布大小，以避免图像在动画过程中溢出画布范围
-            self.width = int(self.original_image.size[0] * 1.5)
-            self.height = int(self.original_image.size[1] * 1.5)
-            
-            # 禁用高DPI缩放，保持原始像素
-            self.root.tk.call('tk', 'scaling', 1.0)
-
-            # 重新创建画布
-            self.canvas = tk.Canvas(self.root, width=self.width, height=self.height,
-                                    highlightthickness=0, bg=char_config["miyu_color"])
-            self.canvas.pack()
-
-            # 转换为tkinter可用格式
-            self.tk_image = ImageTk.PhotoImage(self.original_image)
-
-            # 底部对齐
-            x: int = (self.width - self.tk_image.width()) // 2
-            y: int = self.height - self.tk_image.height()
-
-            self.canvas_image = self.canvas.create_image(x, y, anchor=tk.NW, image=self.tk_image)
+        self.root.bind("<Key>", self.on_key_press)
         
-        except Exception as e:
-            print(f"图片加载失败: {e}")
-            self.width, self.height = 200, 200
-            self.canvas = tk.Canvas(self.root, width=self.width, height=self.height,
-                                    highlightthickness=0, bg="white")
-            self.canvas.pack()
-            self.canvas.create_text(100, 100, text="图片加载失败", fill="black")
+        self.create_right_menu() # 创建右键菜单
+        self.create_tray() # 创建系统托盘
+        self.root.geometry(f"{self.width}x{self.height}+100+100") # 调整窗口大小和位置
+
+        # 欢迎
+        self.start_animation()
+        
+    def load_image(self, image_path: str):
+        """加载图片并保持原始像素"""
+        self.original_image: Image.Image
+        try:
+            self.original_image = Image.open(image_path).convert("RGBA")
+        except Exception:
+            self.original_image = Image.new("RGBA", (0x100, 0x100), "#F800F8")
+            draw = ImageDraw.Draw(self.original_image)
+            draw.rectangle(((0x0, 0x0), (0x80, 0x80)), fill="#000000")
+            draw.rectangle(((0x80, 0x80), (0x100, 0x100)), fill="#000000")
+            draw.text((0x20, 0x10), ":(", fill="#F800F8", font_size=0x40)
+        
+        # 二值化透明度，去除白边
+        self.original_image = threshold(self.original_image)
+        
+        # 略微扩展画布大小，以避免图像在动画过程中溢出画布范围
+        self.width: int = int(self.original_image.size[0] * 1.5)
+        self.height: int = int(self.original_image.size[1] * 1.5)
+        
+        # 禁用高DPI缩放，保持原始像素
+        self.root.tk.call('tk', 'scaling', 1.0)
+
+        # 重新创建画布
+        self.canvas: tk.Canvas = tk.Canvas(self.root, width=self.width, height=self.height,
+                                highlightthickness=0, bg=char_config["miyu_color"])
+        self.canvas.pack()
+
+        # 转换为tkinter可用格式
+        self.tk_image: ImageTk.PhotoImage = ImageTk.PhotoImage(self.original_image)
+
+        # 底部对齐
+        x: int = (self.width - self.tk_image.width()) // 2
+        y: int = self.height - self.tk_image.height()
+
+        self.canvas_image: int = self.canvas.create_image(x, y, anchor=tk.NW, image=self.tk_image)
+            
+    def start_animation(self):
+        """开始播放动画"""
+        self.animation_start_time: float = time.time()
+        threading.Thread(target=self.play_sound).start()
+        self.current_frame = 0
+        if not self.animating:
+            self.animating = True
+            self.animate()
 
     def on_click(self, event: tk.Event):
-        """左键点击事件：开始拖动或播放动画"""
-        # 播放弹跳动画
-        self.current_frame = 0
-        self.animation_start_time: float = time.time()
-        # 播放音效
-        threading.Thread(target=self.play_sound).start()
+        """左键点击事件"""
+        self.start_animation()
         if self.animating:
             # 记录拖动起始位置
             self.dragging = True
             self.start_x = event.x
             self.start_y = event.y
-        else:
-            self.animating = True
-            self.animate()
+
+    def on_key_press(self, event: tk.Event):
+        """键盘按键事件"""
+        self.start_animation()
 
     def on_drag(self, event: tk.Event):
-        """拖动事件"""
+        """左键拖动事件"""
         if self.dragging:
             # 计算新位置
             x: int = self.root.winfo_x() + (event.x - self.start_x)
@@ -226,35 +225,37 @@ class FloatingImage:
             self.root.geometry(f"+{x}+{y}")
 
     def on_release(self, event: tk.Event):
-        """释放左键"""
+        """左键释放事件"""
         self.dragging = False
 
-    def play_sound(self):
+    def play_sound(self) -> None:
         """播放音效"""
         try:
+            if not config["echo"]:
+                self.sound.stop()
             self.sound.play()
         except:
             pass
     
     def gen_frames(self) -> None:
         """提前生成所有动画帧"""
-        self.animation.clear()
-        for frame in range(int(self.duration * fps)):
-            x_factor, y_factor = custom_easing_curve(frame / (self.duration * fps))
+        self.animation: list[Image.Image] = [] # 动画帧列表
+        for frame in range(int(self.duration * config["fps"])):
+            x_factor, y_factor = custom_easing_curve(frame / (self.duration * config["fps"]))
             img: Image.Image = self.original_image.resize((
                 int(self.original_image.size[0] * x_factor),
                 int(self.original_image.size[1] * y_factor)
             ), Image.Resampling.BILINEAR)
             self.animation.append(threshold(img))
 
-    def animate(self):
+    def animate(self) -> None:
         """弹跳动画（纵轴缩放）"""
         if not self.animating:
             return
 
         # 计算当前应当播放第几帧，并判断是否播放完毕
-        self.current_frame = int((time.time() - self.animation_start_time) * fps)
-        if self.current_frame >= self.duration * fps:
+        self.current_frame = int((time.time() - self.animation_start_time) * config["fps"])
+        if self.current_frame >= self.duration * config["fps"]:
             self.animating = False
             self.tk_image = ImageTk.PhotoImage(self.original_image)
             self.canvas.itemconfig(self.canvas_image, image=self.tk_image)
@@ -271,31 +272,19 @@ class FloatingImage:
         self.canvas.coords(self.canvas_image, new_x, new_y)
 
         # 准备播放下一帧动画
-        self.root.after(1000 // fps, self.animate)
-
-    def create_right_menu(self):
-        """创建右键菜单"""
-        self.right_menu: tk.Menu = Menu(self.root, tearoff=0)
-        self.right_menu.add_command(label="更换中旋", command=self.change_sound)
-        self.right_menu.add_command(label="更换晴", command=self.change_image)
-        self.right_menu.add_command(label="导入", command=self.load_char)
-        self.right_menu.add_command(label="导出", command=self.dump_char)
-        self.right_menu.add_separator()
-        self.right_menu.add_command(label="关闭", command=self.quit_app)
-
-    def show_right_menu(self, event: tk.Event):
-        """显示右键菜单"""
-        try:
-            self.right_menu.post(event.x_root, event.y_root)
-        except:
-            pass
+        self.root.after(500 // config["fps"], self.animate)
+    
+    def summon(self):
+        """将晴召唤至窗口顶层"""
+        self.root.focus_force()
+        self.start_animation()
 
     def change_image(self):
         """更换图片"""
         file_path: str = filedialog.askopenfilename(
-            title="选择晴",
+            title="选择晴…",
             initialdir=char_res_path(""),
-            filetypes=[("图片文件", "*.png *.gif *.jpg *.jpeg *.bmp *.webp")]
+            filetypes=[("支持的图片文件", "*.png *.gif *.jpg *.jpeg *.bmp *.webp"), ("所有文件", "*")]
         )
         if file_path:
             try:
@@ -309,9 +298,9 @@ class FloatingImage:
     def change_sound(self):
         """更换音效"""
         file_path: str = filedialog.askopenfilename(
-            title="选择中旋",
+            title="选择中旋…",
             initialdir=char_res_path(""),
-            filetypes=[("音频文件", "*.wav *.mp3 *.ogg *.flac")]
+            filetypes=[("音频文件", "*.wav *.mp3 *.ogg *.flac"), ("所有文件", "*")]
         )
         if file_path:
             try:
@@ -325,7 +314,7 @@ class FloatingImage:
     def load_char(self):
         """从文件夹导入当前角色配置"""
         file_path: str = filedialog.askdirectory(
-            title="从文件夹导入",
+            title="导入角色…",
             initialdir=resource_path(""),
         )
         if file_path:
@@ -336,12 +325,39 @@ class FloatingImage:
     def dump_char(self):
         """导出当前角色配置至文件夹"""
         file_path: str = filedialog.askdirectory(
-            title="导出到文件夹",
+            title="导出角色…",
             initialdir=resource_path(""),
         )
         if file_path:
             shutil.copytree(resource_path(config["char"]), resource_path(file_path), dirs_exist_ok=True)
             # self.restart_app()
+
+    def switch_topmost(self):
+        """切换窗口置顶状态"""
+        config["topmost"] = not config["topmost"]
+        dump_config()
+        self.root.attributes('-topmost', config["topmost"])
+
+    def create_right_menu(self) -> None:
+        """创建右键菜单"""
+        self.right_menu: tk.Menu = Menu(self.root, tearoff=0)
+        self.right_menu.add_command(label="更换中旋…", command=self.change_sound)
+        self.right_menu.add_command(label="更换晴…", command=self.change_image)
+        self.right_menu.add_separator()
+        self.right_menu.add_command(label="导入角色…", command=self.load_char)
+        self.right_menu.add_command(label="导出角色…", command=self.dump_char)
+        self.right_menu.add_separator()
+        self.right_menu.add_command(label="切换置顶", command=self.switch_topmost)
+        self.right_menu.add_separator()
+        self.right_menu.add_command(label="重新加载", command=self.restart_app)
+        self.right_menu.add_command(label="退出", command=self.quit_app)
+
+    def show_right_menu(self, event: tk.Event):
+        """显示右键菜单"""
+        try:
+            self.right_menu.post(event.x_root, event.y_root)
+        except:
+            pass
 
     def create_tray(self):
         """创建系统托盘"""
@@ -354,10 +370,13 @@ class FloatingImage:
 
         # 托盘菜单
         tray_menu: tuple[MenuItem, ...] = (
-            MenuItem('更换中旋', self.change_sound),
-            MenuItem('更换晴', self.change_image),
-            MenuItem('导入', self.load_char),
-            MenuItem('导出', self.dump_char),
+            MenuItem('召唤', self.summon, default=True),
+            MenuItem('更换中旋…', self.change_sound),
+            MenuItem('更换晴…', self.change_image),
+            MenuItem('导入…', self.load_char),
+            MenuItem('导出…', self.dump_char),
+            MenuItem('切换置顶', self.switch_topmost),
+            MenuItem('重新加载', self.restart_app),
             MenuItem('退出', self.quit_app)
         )
 
@@ -391,7 +410,9 @@ class FloatingImage:
 def main():
     # 加载配置
     load_config()
+    dump_config()
     load_char_config()
+    # dump_char_config()
     
     # 创建主窗口
     root: tk.Tk = tk.Tk()
