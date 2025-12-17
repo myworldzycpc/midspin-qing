@@ -53,7 +53,7 @@ class Config(TypedDict):
 
 config: Config
 default_config: Config = Config({
-    "char": "miss_qing",
+    "char": "./miss_qing",
     "fps": 60,
     "topmost": True,
     "echo": False,
@@ -91,15 +91,15 @@ def load_char_config():
         char_config = default_char_config.copy()
         char_config.update(yaml.load(f, Loader=yaml.FullLoader))
 
-def dump_config():
-    global config
+def dump_config(cfg: Config | None = None, /):
+    if cfg is None: cfg = config
     with open(resource_path(path_config), "w") as f:
-        yaml.dump(config, f)
+        yaml.dump(cfg, f)
 
-def dump_char_config():
-    global char_config
+def dump_char_config(cfg: CharConfig | None = None, /):
+    if cfg is None: cfg = char_config
     with open(char_res_path(path_char_config), "w") as f:
-        yaml.dump(char_config, f)
+        yaml.dump(cfg, f)
 
 
 # 计算角色素材路径
@@ -361,8 +361,8 @@ class FloatingImage:
         self.right_menu.add_command(label="更换中旋…", command=self.change_sound)
         self.right_menu.add_command(label="更换晴…", command=self.change_image)
         self.right_menu.add_separator()
-        self.right_menu.add_command(label="导入角色…", command=self.load_char)
-        self.right_menu.add_command(label="导出角色…", command=self.dump_char)
+        self.right_menu.add_command(label="读取角色配置…", command=self.load_char)
+        self.right_menu.add_command(label="克隆角色配置…", command=self.dump_char)
         self.right_menu.add_separator()
         self.right_menu.add_command(label="切换置顶", command=self.switch_topmost)
         self.right_menu.add_separator()
@@ -391,8 +391,8 @@ class FloatingImage:
             MenuItem('召唤', self.summon, default=True),
             MenuItem('更换中旋…', self.change_sound),
             MenuItem('更换晴…', self.change_image),
-            MenuItem('导入…', self.load_char),
-            MenuItem('导出…', self.dump_char),
+            MenuItem('读取角色配置…', self.load_char),
+            MenuItem('克隆角色配置…', self.dump_char),
             MenuItem('切换置顶', self.switch_topmost),
             MenuItem('重新加载', self.restart_app),
             MenuItem('退出', self.quit_app)
@@ -427,6 +427,7 @@ class FloatingImage:
 
 def main():
     # 加载配置
+    if not os.path.exists(resource_path(path_config)): dump_config(default_config)
     load_config()
     dump_config()
     load_char_config()
